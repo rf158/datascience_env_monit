@@ -13,8 +13,5 @@ docs/     notes and templates
 ## Author
 Rebecca Franke
 
-git status
-git add README.md
-git commit -m "Add README with run instructions"
-git push
 new line
+Rebecca Franke, 06.11.26
