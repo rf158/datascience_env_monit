@@ -1,1 +1,68 @@
+---
+title: "Data summary of my five flux towers"
+author: "Rebecca Franke"
+date: today
+format:
+  html:
+    toc: true
+    embed-resources: true
+execute:
+  warning: false
+---
 
+# C1: Site overview
+
+A table with one row per tower: site ID, name, country, IGBP class, latitude, longitude, first and last year, hub, and the data citation. Most of it is in your snapshot CSV. Add a simple map of the five sites (a world map with five points is enough).
+
+```{r}
+## Load data ---------------------------------------------------------------
+library(readr)
+library(dplyr)
+
+snapshot <- read.csv("data/snapshots/fluxnet_shuttle_snapshot_20261113T105747.csv")
+
+## Create table
+five_towers <- c("US-GLE", "BE-Vie", "GF-Guy", "JP-Mse", "AU-Ync")
+site_metadata <- snapshot |>
+    filter(site_id %in% five_towers) |>
+    distinct(site_id, .keep_all = TRUE) |>
+    select(
+    site_id   = site_id,
+    name      = site_name,
+    igbp      = igbp,
+    latitude  = location_lat,
+    longitude = location_long,
+    hub       = network,
+    citation  = product_citation
+  )
+
+## Add first / last year per site -------------------------------------------
+site_years <- hh_all |>
+  mutate(time = as.POSIXct(time, tz = "UTC")) |>
+  mutate(year = as.integer(format(time, "%Y"))) |>
+  group_by(site) |>
+  summarise(
+    first_year = min(year, na.rm = TRUE),
+    last_year  = max(year, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Now join, but problem with site Ids in site years
+library(stringr)   # for str_split()
+site_years <- site_years |>
+  mutate(
+    site_id = str_split(site, "_", simplify = TRUE)[, 2]   # extract the 2nd token
+  ) |>
+  # keep only the columns needed for the join
+  select(site_id, first_year, last_year)
+
+site_metadata <- site_metadata |>
+  left_join(site_years, by = c("site_id" = "site_id")) |>
+  # (optional) reorder columns for readability
+  select(
+    site_id, name, igbp,
+    latitude, longitude,
+    first_year, last_year,
+    hub, citation
+  )
+```
