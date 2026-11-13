@@ -19,9 +19,9 @@
 # Needs: Python 3.9 or newer (the Shuttle itself runs on 3.9-3.13; with only 3.14, uv provides 3.13), Git (to install the Shuttle), internet, ~2-3 GB free disk space.
 
 # ---- 1. Your settings -------------------------------------------------------
-my_student   <- "07"       # your student number from tower_sets_block4.csv
+my_student   <- "08"       # your student number from tower_sets_block4.csv
 my_sites     <- NULL       # or give sites yourself, e.g. c("DE-Hai", "FR-Hes"); then my_student is ignored
-tower_csv    <- "tower_sets_block4.csv"
+tower_csv    <- "data/tower_sets_block4.csv"
 new_snapshot <- FALSE      # TRUE = make a fresh snapshot even if one exists
 
 shuttle_source <- "git+https://github.com/fluxnet/shuttle.git"
