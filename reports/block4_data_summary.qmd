@@ -9,14 +9,23 @@ format:
 execute:
   warning: false
 ---
+# Libraries
+
+```{r}
+# General stuff I need often
+library(readr)
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(tidyr)
+library(stringr)
+library(knitr)
+
+```
 
 # The function for the zip files
 
 ```{r}
-# Function
-library(readr)
-library(dplyr)
-
 # Create function
 read_hh <- function(zip_file) {
 
@@ -87,18 +96,26 @@ range(hh_data$time)
 # Share of measured NEE
 mean(hh_data$NEE_VUT_REF_QC == 0, na.rm = TRUE)
 
+### make conversion of time format permanent & get the site ids
+hh_data <- hh_data |>
+  mutate(
+    time = as.POSIXct(time, tz = "UTC"),
+    year = as.integer(format(time, "%Y")),
+    date = as.Date(time),
+    site_id = str_split(site, "_", simplify = TRUE)[, 2]
+  )
+
 ```
 
 # C1: Site overview
 
 A table with one row per tower: site ID, name, country, IGBP class, latitude, longitude, first and last year, hub, and the data citation. Most of it is in your snapshot CSV. Add a simple map of the five sites (a world map with five points is enough).
 
+## The table
 ```{r}
 # Load data 
-library(readr)
-library(dplyr)
-
 snapshot <- read.csv("data/snapshots/fluxnet_shuttle_snapshot_20261113T105747.csv")
+names(snapshot)
 
 # Create table
 five_towers <- c("US-GLE", "BE-Vie", "GF-Guy", "JP-Mse", "AU-Ync")
@@ -111,14 +128,21 @@ site_metadata <- snapshot |>
     igbp      = igbp,
     latitude  = location_lat,
     longitude = location_long,
-    hub       = network,
+    hub       = data_hub,
     citation  = product_citation
   )
 
+## Add countries
+site_metadata <- site_metadata |>
+  mutate(country = recode(substr(site_id, 1, 2),
+                          "US" = "United States", "BE" = "Belgium",
+                          "GF" = "French Guyana", "JP" = "Japan",
+                          "AU" = "Australia")) |>
+  relocate(country, .after = name)
+
 ## Add first & last year
-site_years <- hh_all |>
-  mutate(time = as.POSIXct(time, tz = "UTC")) |> # need to format the time thing
-  mutate(year = as.integer(format(time, "%Y"))) |>
+
+site_years <- hh_data |>
   group_by(site) |>
   summarise(
     first_year = min(year, na.rm = TRUE),
@@ -144,10 +168,379 @@ site_metadata <- site_metadata |>
     first_year, last_year,
     hub, citation
   )
+
+site_metadata
 ```
 
-The map
+## The map
 
 ```{r}
+# install.packages(c("maps", "ggrepel"))
+library(maps)
+library(ggrepel) # no overlaps
 
+world <- map_data("world")
+
+site_map <- ggplot() +
+  geom_polygon(
+    data = world,
+    aes(x = long, y = lat, group = group),
+    fill = "grey90", colour = "grey60", linewidth = 0.2
+  ) +
+  geom_point(
+    data = site_metadata,
+    aes(x = longitude, y = latitude, colour = igbp),
+    size = 3
+  ) +
+  geom_text_repel(
+    data = site_metadata,
+    aes(x = longitude, y = latitude, label = site_id),
+    size = 3.5, min.segment.length = 0
+  ) +
+  coord_quickmap(xlim = c(-180, 180), ylim = c(-60, 85)) +
+  labs(
+    title  = "Locations of the five flux towers",
+    x = "Longitude", y = "Latitude", colour = "IGBP class"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+site_map
+```
+
+# C2: Data coverage
+
+For each site and year, the share of half hours in which NEE was measured (NEE_VUT_REF_QC == 0). Show it as a heat map: sites on the y-axis, years on the x-axis, colour = share measured. Add one sentence: which site and years have the best data?
+
+```{r}
+nee_share <- hh_data |>
+  group_by(site_id, year) |>
+  summarise(
+    n_total = n(),
+    n_measured = sum(NEE_VUT_REF_QC == 0, na.rm = TRUE),  # NA QC counts as not measured
+    share = n_measured / n_total,
+    .groups = "drop"
+  ) |>
+  # make years without any rows show up as empty tiles instead of vanishing
+  complete(site_id, year = full_seq(year, 1))
+
+heatmap_nee <- ggplot(nee_share, aes(x = year, y = site_id, fill = share)) +
+  geom_tile(colour = "white") +
+  scale_fill_viridis_c(
+    name = "Share measured",
+    limits = c(0, 1),
+    labels = scales::percent,
+    na.value = "grey85"
+  ) +
+  scale_x_continuous(breaks = scales::breaks_width(2), expand = c(0, 0)) +
+  labs(
+    title = "Share of half hours with measured NEE (NEE_VUT_REF_QC == 0)",
+    x = "Year", y = NULL
+  ) +
+  theme_minimal() +
+  theme(panel.grid = element_blank(), legend.position = "bottom")
+
+heatmap_nee
+```
+
+The site in Vielsalm, Belgium has the most coverage over all years in total. There are no years in which every site has data, but in the years 2004-2009 and 2012-2020 four out of five sites reported NEE shares.
+
+# C3: Summary statistics
+
+A table per site with mean, minimum, maximum and % missing for TA_F, SW_IN_F, VPD_F, P_F, NEE_VUT_REF, GPP_NT_VUT_REF, RECO_NT_VUT_REF, H_F_MDS and LE_F_MDS. Give the units in the column headers. For precipitation, give the mean annual sum instead of the mean.
+
+
+```{r}
+vars <- c("TA_F", "SW_IN_F", "VPD_F", "P_F", "NEE_VUT_REF",
+          "GPP_NT_VUT_REF", "RECO_NT_VUT_REF", "H_F_MDS", "LE_F_MDS")
+
+# Column headers with units
+labels <- c(
+  TA_F            = "TA_F (°C)",
+  SW_IN_F         = "SW_IN_F (W m⁻²)",
+  VPD_F           = "VPD_F (hPa)",
+  P_F             = "P_F (mm; mean = annual sum)",
+  NEE_VUT_REF     = "NEE_VUT_REF (µmol CO₂ m⁻² s⁻¹)",
+  GPP_NT_VUT_REF  = "GPP_NT_VUT_REF (µmol CO₂ m⁻² s⁻¹)",
+  RECO_NT_VUT_REF = "RECO_NT_VUT_REF (µmol CO₂ m⁻² s⁻¹)",
+  H_F_MDS         = "H_F_MDS (W m⁻²)",
+  LE_F_MDS        = "LE_F_MDS (W m⁻²)"
+)
+
+dat <- hh_data |>
+  # FLUXNET codes missing values as -9999; skip this line if already NA
+  mutate(across(all_of(vars), ~ na_if(.x, -9999))) # replaces -9999 with nas
+
+# Mean, min, max, % missing for every variable
+stats_long <- dat |> # from wide to long format, stacking into two columns (variable and values) because I need the variables in rows
+  pivot_longer(all_of(vars), names_to = "variable", values_to = "value") |>
+  group_by(site_id, variable) |> # treat each site with var as group, so in summarrise there is a value for each variable per site
+  summarise(
+    Mean = mean(value, na.rm = TRUE), # ignoring NAs
+    Min  = min(value, na.rm = TRUE),
+    Max  = max(value, na.rm = TRUE),
+    `% missing` = 100 * mean(is.na(value)), # percentage of missing values
+    .groups = "drop" # stop the grouping from before to have next steps behave normally
+  )
+
+# Precipitation: replace the mean by the mean annual sum
+precip_annual <- dat |>
+  group_by(site_id, year) |> # new grouping to get sum mean per year
+  summarise(annual_sum = sum(P_F, na.rm = TRUE), .groups = "drop") |> # now summarise per year and stop the groups
+  group_by(site_id) |> # now means from sums before per site
+  summarise(annual_mean = mean(annual_sum), .groups = "drop") 
+
+stats_long <- stats_long |> # now add the precipitation to the table
+  left_join(precip_annual, by = "site_id") |> # 
+  mutate(Mean = if_else(variable == "P_F", annual_mean, Mean)) |>
+  select(-annual_mean)
+
+# Reshape: statistics as rows, variables (with units) as columns
+site_table <- function(id) {
+  stats_long |>
+    filter(site_id == id) |> # get specific site
+    mutate(variable = factor(variable, levels = vars, labels = labels[vars])) |> # swaps variable names for the previously named units
+    pivot_longer(c(Mean, Min, Max, `% missing`), # 4 statistics columns are now rows 
+                 names_to = "Statistic", values_to = "value") |>
+    pivot_wider(names_from = variable, values_from = value) |> # now the variables are back to columns
+    mutate(Statistic = factor(Statistic, levels = c("Mean", "Min", "Max", "% missing"))) |> # making them factors in a specific order
+    arrange(Statistic)  # now apply this order
+}
+
+tab_US_GLE <- site_table("US-GLE")
+tab_BE_Vie <- site_table("BE-Vie")
+tab_GF_Guy <- site_table("GF-Guy")
+tab_JP_Mse <- site_table("JP-Mse")
+tab_AU_Ync <- site_table("AU-Ync")
+
+# Showing off the tables
+tab_US_GLE
+tab_BE_Vie
+tab_GF_Guy
+tab_JP_Mse
+tab_AU_Ync
+```
+
+## Checking Guyana because it has no GPP or RECO values
+
+```{r}
+tab <- hh_data |>
+  group_by(site_id) |>
+  summarise(across(c(NEE_VUT_REF, GPP_NT_VUT_REF, RECO_NT_VUT_REF),
+                   list(n_valid = ~ sum(!is.na(.x) & .x != -9999),
+                        n_fill  = ~ sum(.x == -9999, na.rm = TRUE))))
+
+hh_data |>
+  filter(site_id == "GF-Guy") |>
+  summarise(across(c(GPP_DT_VUT_REF, RECO_DT_VUT_REF),
+                   ~ sum(!is.na(.x) & .x != -9999)))
+
+grep("GPP|RECO", names(hh_data), value = TRUE)
+```
+
+Guyana has no GPP or RECO values (100% missing) and no daytime partitioning (DT) is available in the data, so only NEE is shown for this site.
+
+# C4: Time series
+
+Aggregate the half-hourly data to daily values yourself and plot daily NEE, GPP and RECO over the whole record, one panel per site.
+
+Unit conversion: 1 µmol CO₂ m⁻² s⁻¹ = 1.0378 g C m⁻² d⁻¹ (× 86 400 s × 12.011 g mol⁻¹ × 10⁻⁶). So a daily mean in µmol m⁻² s⁻¹ × 1.0378 gives g C m⁻² d⁻¹.
+
+Check your aggregation once against the daily FLUXMET_DD file for one site.
+
+
+```{r}
+# Daily fluxes
+conv <- 1.0378 # 1 µmol CO₂ m⁻² s⁻¹ = 1.0378 g C m⁻² d⁻¹
+flux_vars <- c("NEE_VUT_REF", "GPP_NT_VUT_REF", "RECO_NT_VUT_REF")
+
+daily <- hh_data |>
+  mutate(across(all_of(flux_vars), ~ na_if(.x, -9999))) |>
+  group_by(site_id, date) |>
+  summarise(n_hh = n(),
+  across(all_of(flux_vars), ~ mean(.x, na.rm = TRUE) * conv),
+  .groups = "drop"
+  )
+
+# Now plot one panel per site
+daily_long <- daily |> 
+  pivot_longer(all_of(flux_vars), names_to = "variable", values_to = "value") |>
+  mutate(variable = recode(variable, NEE_VUT_REF = "NEE",GPP_NT_VUT_REF  = "GPP", RECO_NT_VUT_REF = "RECO"))
+
+daily_plot <- ggplot(daily_long, aes(x = date, y = value, colour = variable)) +
+  geom_line(linewidth = 0.4, na.rm = TRUE) +
+  facet_wrap(~ site_id, scales = "free_x", ncol = 1) +
+  labs(
+    title = "Daily fluxes of NEE, GPP and RECO",
+    x = NULL, y = "Flux (g C m⁻² d⁻¹)"
+  ) +
+  theme_minimal()+
+  theme(legend.position = "bottom")
+
+daily_plot
+
+```
+
+## Check up
+
+### Unzip the file for US-GLE
+
+```{r}
+keep_2 <- c("TIMESTAMP", "TA_F", "SW_IN_F", "VPD_F", "P_F",
+          "NETRAD", "G_F_MDS", "H_F_MDS", "H_F_MDS_QC", "LE_F_MDS", "LE_F_MDS_QC",
+          "NEE_VUT_REF", "NEE_VUT_REF_QC", "GPP_NT_VUT_REF", "RECO_NT_VUT_REF")
+
+zip_file <- list.files("data/raw", pattern = "\\.zip$", full.names = TRUE)[1]
+dd_name  <- grep("FLUXMET_DD", unzip(zip_file, list = TRUE)$Name, value = TRUE)
+unzip(zip_file, files = dd_name, exdir = "data/raw/unzipped")
+
+dd <- read_csv(file.path("data/raw/unzipped", dd_name),
+               na = "-9999",
+               col_select = any_of(keep_2),
+               col_types = cols(TIMESTAMP = "c", .default = "d")) |>
+  mutate(time = as.POSIXct(TIMESTAMP, format = "%Y%m%d", tz = "UTC"))
+
+nrow(dd)
+range(dd$time)
+mean(dd$NEE_VUT_REF_QC == 0, na.rm = TRUE)   # share of measured NEE
+```
+
+### Do the comparison
+```{r}
+dd <- read.csv("data/raw/unzipped/AMF_US-GLE_FLUXNET_FLUXMET_DD_2005-2020_v1.3_r1.csv") |>
+  mutate(date = as.Date(as.character(TIMESTAMP), format = "%Y%m%d")) |>
+  select(date, NEE_dd = NEE_VUT_REF, GPP_dd = GPP_NT_VUT_REF, RECO_dd = RECO_NT_VUT_REF) |>
+  mutate(across(c(NEE_dd, GPP_dd, RECO_dd), ~ na_if(.x, -9999))) 
+
+# get the daily data for US-GLE
+check <- daily |> 
+  filter(site_id == "US-GLE") |>
+  inner_join(dd, by = "date") |>
+  mutate(
+    d_NEE  = NEE_VUT_REF     - NEE_dd,
+    d_GPP  = GPP_NT_VUT_REF  - GPP_dd,
+    d_RECO = RECO_NT_VUT_REF - RECO_dd
+  )
+
+# do summaries and correlation
+summary(check[, c("d_NEE", "d_GPP", "d_RECO")])
+cor(check$NEE_VUT_REF, check$NEE_dd, use = "complete.obs") # 0.9933843:
+cor(check$GPP_NT_VUT_REF, check$GPP_dd, use = "complete.obs") # 0.9921102
+cor(check$RECO_NT_VUT_REF, check$RECO_dd, use = "complete.obs") # 1
+
+#  Very good, but small differences probably due to different aggregation methods
+
+# Plot NEE as example: looks good!
+ggplot(check, aes(NEE_dd, NEE_VUT_REF)) +
+  geom_point(alpha = 0.3) +
+  geom_abline(colour = "red") +
+  labs(x = "NEE from FLUXMET_DD (g C m-2 d-1)",
+       y = "NEE aggregated here (g C m-2 d-1)")
+```
+
+# C5: Diurnal cycles
+
+The mean daily course (hour of day on the x-axis) of NEE and LE for each season, all five sites in one figure. Careful: seasons are reversed in the southern hemisphere. Use latitude to define the seasons correctly and say how you did it.
+
+```{r}
+# Latitude per site from the C1 table
+site_lat <- site_metadata |> select(site_id, latitude)
+
+diurnal <- hh_data |>
+  left_join(site_lat, by = "site_id") |>
+  mutate( 
+    across(c(NEE_VUT_REF, LE_F_MDS), ~ na_if(.x, -9999)),
+    month = as.integer(format(time, "%m")), # new column month for season calculation
+    hour = as.integer(format(time, "%H")) + as.integer(format(time, "%M")) / 60, # hour of the day as decimal number
+
+    # Northern-hemisphere seasons by month (meteorological)
+    season_n = case_when(
+      month %in% c(12, 1, 2) ~ "Winter",
+      month %in% c(3, 4, 5)  ~ "Spring",
+      month %in% c(6, 7, 8)  ~ "Summer",
+      month %in% c(9, 10, 11) ~ "Autumn"),
+    # Southern hemisphere (latitude < 0): swapping
+    season = if_else(latitude < 0,
+      recode(season_n, Winter = "Summer", Summer = "Winter", Spring = "Autumn", Autumn = "Spring"), season_n),
+    season = factor(season, levels = c("Winter", "Spring", "Summer", "Autumn"))
+  ) |>
+  group_by(site_id, season, hour) |>
+  summarise(
+    NEE = mean(NEE_VUT_REF, na.rm = TRUE), 
+    LE  = mean(LE_F_MDS, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  pivot_longer(c(NEE, LE), names_to = "variable", values_to = "value") |>
+  mutate(variable = recode(variable, NEE = "NEE (µmol CO₂ m⁻² s⁻¹)", LE  = "LE (W m⁻²)"))
+
+diurnal_plot <- ggplot(diurnal, aes(hour, value, colour = site_id)) +
+  geom_line(linewidth = 0.7) +
+  facet_grid(variable ~ season, scales = "free_y", switch = "y") +
+  scale_x_continuous(breaks = seq(0, 24, 6)) +
+  labs(title  = "Mean daily course of NEE and LE by season",
+    x = "Hour of day (local standard time)", y = NULL, colour = "Site") +
+  theme_minimal() +
+  theme(legend.position = "bottom", strip.placement = "outside")
+
+diurnal_plot
+```
+
+The seasons were defined as meterological seasons by calendar months (December-February = Winter, March-May = Spring, June-August = Summer, September-November = Autumn) for the northern hemisphere. For the southern hemisphere, the seasons were swapped (Winter to Summer, Spring to Autumn). This was based on the negative latitude in the southern hemisphere. The latitude for finding the hemisphere was taken from the snapshot table.
+
+# C6: Your reading
+1. Energy balance for one tower: scatter of H_F_MDS + LE_F_MDS against NETRAD − G_F_MDS, using only half hours where H and LE were measured (_QC == 0). Add the 1:1 line and the slope of a linear fit. Some towers have no NETRAD or G; pick one that has them.
+2. 5–8 sentences comparing your towers: which takes up the most carbon per year, which has the largest seasonal cycle, which surprised you, and how much of the data is gap-filled.
+
+## Energy balance for one tower
+
+```{r}
+# Find a fitting tower
+needed <- c("NETRAD", "G_F_MDS", "H_F_MDS", "LE_F_MDS", "H_F_MDS_QC", "LE_F_MDS_QC")
+needed %in% names(hh_data)   # all must be TRUE
+
+hh_data |>
+  group_by(site_id) |>
+  summarise(across(c(NETRAD, G_F_MDS),
+                   ~ round(100 * mean(is.na(.x) | .x == -9999), 1),
+                   .names = "{.col}_pct_missing"))
+
+# Result: US-Gle has least missing data for NETRAD and G_F_MDS
+
+# Prep data & fit
+
+site_sel <- "US-GLE"
+
+eb <- hh_data |>
+  filter(site_id == site_sel,
+         H_F_MDS_QC == 0, LE_F_MDS_QC == 0) |> # H and LE measured
+  mutate(across(c(NETRAD, G_F_MDS, H_F_MDS, LE_F_MDS), ~ na_if(.x, -9999))) |>
+  mutate(
+    turb  = H_F_MDS + LE_F_MDS, # turbulent fluxes
+    avail = NETRAD - G_F_MDS # available energy
+  ) |>
+  filter(!is.na(turb), !is.na(avail))
+
+fit <- lm(turb ~ avail, data = eb)
+coef(fit)
+summary(fit)$r.squared
+nrow(eb)
+
+slope <- coef(fit)[["avail"]]
+icept <- coef(fit)[["(Intercept)"]]
+
+eb_plot <- ggplot(eb, aes(avail, turb)) +
+  geom_point(alpha = 0.1, size = 0.6) +
+  geom_abline(intercept = 0, slope = 1, colour = "red", linewidth = 0.8) +
+  geom_abline(intercept = icept, slope = slope, colour = "blue", linewidth = 0.8) +
+  annotate("text", x = -Inf, y = Inf, hjust = -0.1, vjust = 1.5,
+           label = sprintf("Slope = %.2f\nIntercept = %.1f W m\u207b\u00b2\nR\u00b2 = %.2f",
+                           slope, icept, summary(fit)$r.squared)) +
+  labs(title = paste("Energy balance closure,", site_sel),
+       subtitle = "Red: 1:1 line, blue: linear fit (half hours with H and LE measured)",
+       x = expression("NETRAD - G (W " * m^-2 * ")"),
+       y = expression("H + LE (W " * m^-2 * ")")) +
+  coord_equal() +
+  theme_minimal()
+
+eb_plot
 ```
