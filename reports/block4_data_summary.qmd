@@ -27,6 +27,7 @@ library(knitr)
 
 ```{r}
 # Create function
+getwd()
 read_hh <- function(zip_file) {
 
   keep <- c("TIMESTAMP_START", "TIMESTAMP_END", "TA_F", "SW_IN_F",
@@ -223,6 +224,8 @@ nee_share <- hh_data |>
   ) |>
   # make years without any rows show up as empty tiles instead of vanishing
   complete(site_id, year = full_seq(year, 1))
+
+
 
 heatmap_nee <- ggplot(nee_share, aes(x = year, y = site_id, fill = share)) +
   geom_tile(colour = "white") +
@@ -508,7 +511,7 @@ hh_data |>
 
 # Prep data & fit
 
-site_sel <- "US-GLE"
+site_sel <- "US-GLE" # using US-GLE
 
 eb <- hh_data |>
   filter(site_id == site_sel,
@@ -526,7 +529,9 @@ summary(fit)$r.squared
 nrow(eb)
 
 slope <- coef(fit)[["avail"]]
+slope # 0.7206918
 icept <- coef(fit)[["(Intercept)"]]
+icept # 23.14922
 
 eb_plot <- ggplot(eb, aes(avail, turb)) +
   geom_point(alpha = 0.1, size = 0.6) +
@@ -544,3 +549,57 @@ eb_plot <- ggplot(eb, aes(avail, turb)) +
 
 eb_plot
 ```
+
+Quick interpretation of the plot: The slope of the linear fit (in blue) is less than 1 (in red), indicating that the turbulent fluxes (H + LE) are generally lower than the available energy (NETRAD - G). The intercept of the fit is positive, suggesting that even when the available energy is low, there is still a baseline level of turbulent flux, which is typical for the night. The high R² value (0.90) indicates a strong linear relationship between the available energy and the turbulent fluxes, but the deviation from the 1:1 line suggests that not all available energy is being converted into turbulent fluxes.
+
+## Comparison of the five towers
+
+
+```{r}
+# Mean annual uptake
+annual_nee <- daily |>
+  mutate(year = as.integer(format(date, "%Y"))) |>
+  group_by(site_id, year) |>
+  summarise(n_days = sum(!is.na(NEE_VUT_REF)),
+            nee_sum = sum(NEE_VUT_REF, na.rm = TRUE),
+            .groups = "drop") |>
+  filter(n_days >= 360)
+
+annual_nee |>
+  group_by(site_id) |>
+  summarise(mean_annual_NEE = mean(nee_sum), n_years = n()) |>
+  arrange(mean_annual_NEE)
+# Vielsalm takes up most!
+
+# Gapfilling in percentage
+gap <- nee_share |>
+  group_by(site_id) |>
+  summarise(pct_measured   = 100 * sum(n_measured, na.rm = TRUE) / sum(n_total, na.rm = TRUE),
+            pct_gapfilled  = 100 - pct_measured)
+
+gap
+```
+
+The code above shows that the Belgian tower in Vielsalm takes up most carbon per year. As the 
+
+heatmap in C2 shows, this tower has the best data coverage over the years. The seasonal cycle is largest in the Guyana tower, which is located in an evergreen broadleaf forest, but also quite high for Japan (cropland). The most seasonal differences are in Japan. This tower surprised me with its relatively high carbon uptake in summer despite being in a cropland and probably being harvested. The Guyana tower has the least data available, with no measurements in GPP and RECO, leading to a high percentage of gap-filled data compared to the other towers. But the Belgian tower has slightly more gap-filled data. Overall, the data quality and coverage vary significantly among the five flux towers, impacting the reliability of carbon flux estimates.
+
+# Data and citation
+
+## Site data
+
+The data come from the FLUXNET data hub (snapshot `fluxnet_shuttle_snapshot_20261113T105747.csv`). The data citations for the five sites are:
+
+```{r citations, results = 'asis', echo = FALSE}
+for (i in seq_len(nrow(site_metadata))) {
+  cat("- **", site_metadata$site_id[i], "** (", site_metadata$name[i], "): ",
+      site_metadata$citation[i], "\n", sep = "")
+}
+```
+
+## FLUXNET data product
+ Pastorello et al. (2020), Scientific Data 7, 225, https://doi.org/10.1038/s41597-020-0534-3, and the FLUX
+
+## Acknowledgment
+
+FLUXNET data products were produced and harmonized by eddy covariance regional networks and data processing centers, including AmeriFlux, ChinaFlux, European Fluxes Database, ICOS, JapanFlux, KoFlux, OzFlux, SAEON, and TERN. These products also include a modified version of ERA5 hourly data provided by the Copernicus Climate Change Service.
