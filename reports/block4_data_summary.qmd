@@ -69,6 +69,7 @@ read_hh <- function(zip_file) {
   return(hh)
 }
 
+
 # All files in one table
 zip_files <- list.files(
   "data/raw",
@@ -317,28 +318,22 @@ tab_JP_Mse <- site_table("JP-Mse")
 tab_AU_Ync <- site_table("AU-Ync")
 
 # Showing off the tables
-tab_US_GLE
-tab_BE_Vie
-tab_GF_Guy
-tab_JP_Mse
-tab_AU_Ync
+library(knitr)
+kable(tab_US_GLE, digits = 2, caption = "US-GLE")
+kable(tab_BE_Vie, digits = 2, caption = "BE-Vie")
+kable(tab_GF_Guy, digits = 2, caption = "GF-Guy")
+kable(tab_JP_Mse, digits = 2, caption = "JP-Mse")
+kable(tab_AU_Ync, digits = 2, caption = "AU-Ync")
 ```
 
 ## Checking Guyana because it has no GPP or RECO values
-
+This code did not work when rendering, it just checked whether there was an error from me or if there really is no GPP and Reco data for Guyana in the data with the variables that were pre-selected for us in the first zipping code.
 ```{r}
-tab <- hh_data |>
-  group_by(site_id) |>
-  summarise(across(c(NEE_VUT_REF, GPP_NT_VUT_REF, RECO_NT_VUT_REF),
-                   list(n_valid = ~ sum(!is.na(.x) & .x != -9999),
-                        n_fill  = ~ sum(.x == -9999, na.rm = TRUE))))
+#tab <- hh_data |>group_by(site_id) |>summarise(across(c(NEE_VUT_REF, GPP_NT_VUT_REF, RECO_NT_VUT_REF),list(n_valid = ~ sum(!is.na(.x) & .x != -9999),n_fill  = ~ sum(.x == -9999, na.rm = TRUE))))
 
-hh_data |>
-  filter(site_id == "GF-Guy") |>
-  summarise(across(c(GPP_DT_VUT_REF, RECO_DT_VUT_REF),
-                   ~ sum(!is.na(.x) & .x != -9999)))
+#hh_data |> filter(site_id == "GF-Guy") |>summarise(across(c(GPP_DT_VUT_REF, RECO_DT_VUT_REF),~ sum(!is.na(.x) & .x != -9999)))
 
-grep("GPP|RECO", names(hh_data), value = TRUE)
+#grep("GPP|RECO", names(hh_data), value = TRUE)
 ```
 
 Guyana has no GPP or RECO values (100% missing) and no daytime partitioning (DT) is available in the data, so only NEE is shown for this site.
@@ -380,8 +375,18 @@ daily_plot <- ggplot(daily_long, aes(x = date, y = value, colour = variable)) +
   theme_minimal()+
   theme(legend.position = "bottom")
 
-daily_plot
 
+
+```
+
+## The plot
+
+```{r}
+#| fig.width: 10
+#| echo: false
+#| eval: true
+#| fig.height: 15
+daily_plot
 ```
 
 ## Check up
