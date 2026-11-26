@@ -1,0 +1,50 @@
+---
+title: "Weird stuff"
+author: "Rebecca Franke"
+date: today
+format:
+  html:
+    toc: true
+    embed-resources: true
+execute:
+  warning: false
+---
+# Libraries
+
+```{r}
+# General stuff I need often
+library(readr)
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(tidyr)
+library(stringr)
+library(knitr)
+
+```
+
+# My question & Hypothesis
+
+How far is each tower year's mean temperature and precipitation from the WorldClim 1970–2000 normal (BIO1, BIO12)?
+
+## 
+
+# Data and citation
+
+## Site data
+
+The data come from the FLUXNET data hub (snapshot `fluxnet_shuttle_snapshot_20261113T105747.csv`). The data citations for the five sites are:
+
+```{r citations, results = 'asis', echo = FALSE}
+for (i in seq_len(nrow(site_metadata))) {
+  cat("- **", site_metadata$site_id[i], "** (", site_metadata$name[i], "): ",
+      site_metadata$citation[i], "\n", sep = "")
+}
+```
+
+## FLUXNET data product
+ Pastorello et al. (2020), Scientific Data 7, 225, https://doi.org/10.1038/s41597-020-0534-3, and the FLUX
+
+## Acknowledgment
+
+FLUXNET data products were produced and harmonized by eddy covariance regional networks and data processing centers, including AmeriFlux, ChinaFlux, European Fluxes Database, ICOS, JapanFlux, KoFlux, OzFlux, SAEON, and TERN. These products also include a modified version of ERA5 hourly data provided by the Copernicus Climate Change Service.
