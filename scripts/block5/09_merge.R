@@ -43,7 +43,7 @@ say("site_static.csv: ", nrow(static), " towers × ", ncol(static), " columns")
 read_dd <- function(zip_file) {
   dd <- grep("FLUXMET_DD", unzip(zip_file, list = TRUE)$Name, value = TRUE)[1]
   if (is.na(dd)) return(NULL)
-  keep <- c("TIMESTAMP", "TA_F", "SW_IN_F", "VPD_F", "P_F", "LE_F_MDS",
+  keep <- c("TIMESTAMP", "TA_F", "SW_IN_F", "VPD_F", "P_F", "LE_F_MDS", "NETRAD","H_F_MDS","G_F_MDS",
             "NEE_VUT_REF", "GPP_NT_VUT_REF", "RECO_NT_VUT_REF", "NEE_VUT_REF_QC")
   read_csv(unz(zip_file, dd), na = c("-9999", "-9999.0"), col_select = any_of(keep),
            col_types = cols(TIMESTAMP = "c", .default = "d"), show_col_types = FALSE) |>
@@ -80,3 +80,4 @@ if (!is.null(dh)) {
 write_csv(daily, file.path("data", "processed", "site_daily.csv"))
 say("site_daily.csv: ", nrow(daily), " tower-days × ", ncol(daily), " columns",
     "\n    Units: GPP/NEE/RECO in the DD files are g C m⁻² d⁻¹; LE in W m⁻²; era5l_swvl in m³ m⁻³.")
+

@@ -27,11 +27,12 @@
 #           https://doi.org/10.3334/ORNLDAAC/1557
 
 source(file.path("scripts", "block5", "block5_sites.R"))
+sites <- sites[sites$site_id != "GF-Guy", ]
 library(MODISTools)
 library(dplyr)
 library(tidyr)
 
-years_back <- 3    # last N years of each tower record (MODIS starts 2000-02-18).
+years_back <- 8    # last N years of each tower record (MODIS starts 2000-02-18).
                    # More years = proportionally longer download.
 km         <- 1    # km left/right and above/below the centre pixel -> 9 × 9 pixels
 compare_official <- FALSE   # TRUE: also download MODIS's own NDVI and EVI to compare

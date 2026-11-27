@@ -27,7 +27,7 @@
 #       dry and hot extreme events from 1950 to 2023. ESSD 17, 6621.
 #       https://doi.org/10.5194/essd-17-6621-2025 · data: https://doi.org/10.5281/zenodo.14884254
 
-source(file.path("data", "scripts", "block5", "block5_sites.R"))
+source(file.path("scripts", "block5", "block5_sites.R"))
 library(terra)
 
 record <- "https://zenodo.org/records/14884254/files"

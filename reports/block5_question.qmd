@@ -1,0 +1,530 @@
+---
+title: "Block 5: Connection of higher temperature and GPP"
+author: "Rebecca Franke"
+date: today
+format:
+  html:
+    toc: true
+    code-fold: true
+    embed-resources: true
+execute:
+  warning: false
+---
+# Libraries
+
+```{r}
+getwd()
+# General stuff I need often
+library(readr)
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(tidyr)
+library(stringr)
+library(knitr)
+library(lubridate)
+```
+
+# Links to my github
+
+```{r}
+#https://github.com/rf158/datascience_env_monit/tree/main/reports
+#https://github.com/rf158/datascience_env_monit/tree/main/scripts
+```
+# Data prep
+
+```{r}
+# 10_annual_table.R: one row per tower-year, ready for analysis
+# Run AFTER 09_merge.R. Output: data/processed/site_annual.csv
+
+source(file.path("scripts", "block5", "block5_sites.R"))
+
+# ---- Settings -----------------------------------------------------------------
+min_days  <- 350   # minimum days with data per tower-year (flux variables)
+min_modis <- 3     # minimum good 16-day EVI values in the summer season
+
+daily  <- read_csv(file.path("data", "processed", "site_daily.csv"),  show_col_types = FALSE)
+static <- read_csv(file.path("data", "processed", "site_static.csv"), show_col_types = FALSE)
+vi     <- read_csv(file.path("data", "external", "modis", "modis_vi_my_sites.csv"),
+                   show_col_types = FALSE)
+
+# ---- 1. Annual flux values per tower-year ---------------------------------------
+# TA_F: degC | P_F: mm/day -> sum = mm/yr | GPP: gC m-2 d-1 -> sum = gC m-2 yr-1
+annual <- daily |>
+  mutate(year = year(date)) |>
+  group_by(site_id, year) |>
+  summarise(n_days_TA  = sum(!is.na(TA_F)),
+            n_days_P   = sum(!is.na(P_F)),
+            n_days_GPP = sum(!is.na(GPP_NT_VUT_REF)),
+            TA_year    = mean(TA_F, na.rm = TRUE),
+            P_year     = sum(P_F, na.rm = TRUE),
+            GPP_year   = sum(GPP_NT_VUT_REF, na.rm = TRUE),
+            .groups = "drop")
+
+# ---- 2. Quality: drop incomplete years (nothing is filled) ----------------------
+message("Dropped tower-years (incomplete):")
+print(as.data.frame(filter(annual, n_days_TA < min_days | n_days_P < min_days |
+                             n_days_GPP < min_days)))
+annual <- filter(annual, n_days_TA >= min_days, n_days_P >= min_days, n_days_GPP >= min_days)
+
+# ---- 3. WorldClim normals and anomalies -----------------------------------------
+annual <- annual |>
+  left_join(select(static, site_id, lat, BIO1, BIO12), by = "site_id") |>
+  mutate(dT     = TA_year - BIO1,            # degC; > 0 = warmer than 1970-2000
+         dP     = P_year  - BIO12,           # mm;   > 0 = wetter than 1970-2000
+         dP_pct = 100 * dP / BIO12) |>
+  group_by(site_id) |>
+  mutate(dGPP = GPP_year - mean(GPP_year)) |> # GPP has no normal: tower's own mean
+  ungroup()
+
+# ---- 4. MODIS: peak EVI and summer EVI from the original 16-day values ----------
+# Summer = Jun-Aug (northern hemisphere) or Dec-Feb (southern; Dec counts to next year)
+evi_year <- vi |>
+  filter(!is.na(evi)) |>
+  left_join(select(static, site_id, lat), by = "site_id") |>
+  mutate(year  = year(date),
+         month = month(date),
+         in_summer   = if_else(lat >= 0, month %in% 6:8, month %in% c(12, 1, 2)),
+         season_year = if_else(lat < 0 & month == 12, year + 1L, year)) |>
+  group_by(site_id, year) |>
+  summarise(EVI_max = max(evi), n_evi = n(), .groups = "drop") |>
+  left_join(
+    vi |>
+      filter(!is.na(evi)) |>
+      left_join(select(static, site_id, lat), by = "site_id") |>
+      mutate(month = month(date),
+             in_summer = if_else(lat >= 0, month %in% 6:8, month %in% c(12, 1, 2)),
+             year = if_else(lat < 0 & month == 12, year(date) + 1L, year(date))) |>
+      filter(in_summer) |>
+      group_by(site_id, year) |>
+      summarise(EVI_summer = mean(evi), n_summer = n(), .groups = "drop"),
+    by = c("site_id", "year")) |>
+  mutate(EVI_summer = if_else(n_summer >= min_modis, EVI_summer, NA_real_))
+
+annual <- left_join(annual, evi_year, by = c("site_id", "year"))  # NA where no MODIS
+
+# ---- 5. Checks -------------------------------------------------------------------
+message("\nTower-years kept per tower:");  print(table(annual$site_id))
+message("\nTower-years with EVI:");        print(table(annual$site_id[!is.na(annual$EVI_max)]))
+message("\nSummary of dT (are all years warmer than the normal?):"); print(summary(annual$dT))
+message("\nSummary of dP_pct:");           print(summary(annual$dP_pct))
+stopifnot(!anyDuplicated(annual[, c("site_id", "year")]))  # one row per tower-year
+
+write_csv(annual, file.path("data", "processed", "site_annual.csv"))
+message("\nsite_annual.csv: ", nrow(annual), " tower-years")
+```
+
+
+
+# E1. Question and hypothesis
+
+Question: How far is each tower year's mean temperature and precipitation from the WorldClim 1970-2000 normal (BIO1, BIO12)?
+
+Hypothesis: All tower years will be warmer than the normal, and within each tower, the years with the larger warm anomaly will have lower annual GPP, because heat increases water loss and makes plants close their stomata, which reduces carbon uptake. The ecological reason is that heat raises evaporative demand, plants close their stomata to limit water loss, and carbon uptake falls.
+
+Datasets: WorldClim (BIO1 as the temperature normal) and MODIS EVI as the second dataset, to check whether the canopy shows the same pattern as GPP.
+
+The five towers cover very different ecosystems and climates. Each tower is compared only with its own other years, which removes differences between sites and vegetation types. BE-Vie has a long record (27 usable years), but JP-Mse (8 years) and AU-Ync (10 years) are short, so their slopes are uncertain. GF-Guy could not be analysed because it has no night-time-partitioned GPP, which leaves four towers. The WorldClim normal is a 9 km grid cell for 1970-2000, so the anomaly includes a site offset, and a relationship between temperature and GPP shows an association, not a cause. MODIS EVI, a satellite measure of canopy greenness, serves as a second, independent description of each tower's canopy and is available for 6 to 8 years per tower (27 tower-years in total), so it only supports a descriptive check of whether peak greenness moves in the same direction as GPP.
+
+# E2. Data
+
+A provenance table, one row per dataset (FLUXNET plus your two).
+
+```{r}
+options(knitr.kable.NA = "–")
+```
+
+## Provenance table
+
+```{r}
+#| label: tbl-provenance
+#| tbl-cap: "Provenance of the three datasets."
+prov <- data.frame(
+  Dataset = c("FLUXNET (daily files, FLUXMET_DD)",
+              "WorldClim 2.1",
+              "MODIS MOD13Q1 (Collection 6.1)"),
+  `Variables used` = c(
+    "TA_F (°C), P_F (mm d-1), GPP_NT_VUT_REF (g C m-2 d-1)",
+    "BIO1 (annual mean temperature, °C), BIO12 (annual precipitation, mm)",
+    "Red, NIR and blue reflectance and pixel reliability; EVI computed from them"),
+  `Spatial resolution` = c(
+    "Point measurement (tower footprint)",
+    "5 arc-minutes (about 9 km)",
+    "250 m pixels, 9 x 9 pixel window (about 2 x 2 km) around the tower"),
+  `Time resolution and period` = c(
+    "Daily, aggregated to years. Tower records: AU-Ync 2012-2025, BE-Vie 1996-2026, JP-Mse 2002-2009, US-GLE 2005-2020",
+    "Long-term normal 1970-2000, one value per tower",
+    "16-day composites, last 8 years of each tower record"),
+  `Downloaded on` = c("13.11.26", "26.11.26", "26.11.26"),
+  `Script and changes` = c(
+    "09_merge.R (-9999 read as NA); 10_annual_table.R (years with < 350 days dropped; annual mean TA_F, sums of P_F and GPP). GF-Guy excluded: GPP_NT_VUT_REF empty",
+    "02_worldclim.R, res_min = 5. Anomaly dT = annual mean TA_F minus BIO1 (10_annual_table.R)",
+    "08_modis_ndvi_evi.R: years_back changed from 3 to 8, GF-Guy skipped; only pixel reliability 0 and 1 kept"),
+  Citation = c(
+    "Pastorello et al. (2020), Scientific Data 7, 225, https://doi.org/10.1038/s41597-020-0534-3",
+    "Fick, S.E. & Hijmans, R.J. (2017) WorldClim 2. Int. J. Climatol. 37, 4302–4315. https://doi.org/10.1002/joc.5086",
+    "Didan, K. (2021) MOD13Q1 MODIS/Terra Vegetation Indices 16-Day L3 Global 250m SIN Grid V061. NASA LP DAAC. https://doi.org/10.5067/MODIS/MOD13Q1.061"),
+  check.names = FALSE)
+kable(prov)
+```
+
+## Description of the datasets at the towers
+
+```{r}
+#| label: tbl-d4
+#| tbl-cap: "WorldClim normals (1970-2000) compared with the tower's measured climate, and MODIS EVI per tower. Measured precipitation at JP-Mse is not shown because its P_F values are implausible (annual sums 4583-6392 mm). GF-Guy: no MODIS data downloaded."
+daily  <- read_csv("data/processed/site_daily.csv",  show_col_types = FALSE)
+static <- read_csv("data/processed/site_static.csv", show_col_types = FALSE)
+annual <- read_csv("data/processed/site_annual.csv", show_col_types = FALSE)
+vi     <- read_csv("data/external/modis/modis_vi_my_sites.csv", show_col_types = FALSE)
+
+clim <- daily |>
+  mutate(year = year(date)) |>
+  group_by(site_id, year) |>
+  summarise(n_TA = sum(!is.na(TA_F)), n_P = sum(!is.na(P_F)),
+            TA = mean(TA_F, na.rm = TRUE), P = sum(P_F, na.rm = TRUE), .groups = "drop") |>
+  filter(n_TA >= 350, n_P >= 350) |>
+  group_by(site_id) |>
+  summarise(`Years` = n(), `Measured T (°C)` = mean(TA), `Measured P (mm/yr)` = mean(P))
+
+modis <- vi |>
+  filter(!is.na(evi)) |>
+  group_by(site_id) |>
+  summarise(`MODIS from` = format(min(date)), `MODIS to` = format(max(date)),
+            `Composites` = n(), `Mean EVI` = mean(evi), `Peak EVI` = max(evi))
+
+evi_years <- annual |> filter(!is.na(EVI_max)) |> count(site_id, name = "Years with EVI (analysis)")
+
+d4 <- static |>
+  select(site_id, Type = igbp, `BIO1 (°C)` = BIO1, `BIO12 (mm/yr)` = BIO12) |>
+  left_join(clim,      by = "site_id") |>
+  left_join(modis,     by = "site_id") |>
+  left_join(evi_years, by = "site_id") |>
+  mutate(`Measured P (mm/yr)` = if_else(site_id == "JP-Mse", NA_real_, `Measured P (mm/yr)`)) |>
+  rename(Tower = site_id)
+
+kable(d4, digits = 1)
+```
+
+```{r}
+#| label: fig-evi
+#| fig-cap: "MODIS EVI (unitless) at the towers. Each point is one 16-day composite (MOD13Q1, 250 m): the mean EVI of good-quality pixels in a 9 x 9 pixel window around the tower. Higher values mean a denser, greener canopy. Only the last 8 years of each record were downloaded."
+#| fig-width: 9
+#| fig-height: 6
+vi_plot <- vi |>
+  filter(!is.na(evi)) |>
+  left_join(select(static, site_id, igbp), by = "site_id") |>
+  mutate(panel = paste0(site_id, " (", igbp, ")"))
+
+ggplot(vi_plot, aes(date, evi, colour = site_id)) +
+  geom_line(linewidth = 0.4, alpha = 0.6) +
+  geom_point(size = 1) +
+  facet_wrap(~ panel, scales = "free_x", ncol = 2) +
+  scale_colour_brewer(palette = "Dark2") +
+  labs(x = "Date", y = "EVI (unitless)") +
+  theme_bw(base_size = 11) +
+  theme(legend.position = "none", strip.text = element_text(face = "bold"))
+```
+
+# E3. Methods
+
+Describe what you did, in enough detail that a classmate could repeat it:
+
+Download: which scripts, which settings, what you changed and why, what failed and how you solved it.
+Extraction: how each dataset was matched to the tower (nearest cell, window around the tower, point service) and in which coordinate system.
+Processing: units and conversions, quality filters, aggregation to a common time step, how you joined the tables, how you treated missing values.
+Analysis: what you computed to test the question, and on which n.
+
+## Download
+
+I used FLUXNET daily files (FLUXMET_DD) from the Block 4 zip files in data/raw. WorldClim 2.1 was downloaded with the provided script 02_worldclim.R without changes (bioclimatic variables at 5 arc-minutes, about 9 km, via the geodata package) on 26.11.26. MODIS MOD13Q1 was downloaded with 08_modis_ndvi_evi.R. The first run used the default years_back <- 3. After merging, only 8 tower-years had EVI together with complete flux data, which was too few for a comparison within a tower. I therefore deleted the pixel files and ran the script again with years_back <- 8 and with GF-Guy skipped (sites <- sites[sites$site_id != "GF-Guy", ]), because GF-Guy has no usable GPP (see Processing). The download took longer than expected and had to be repeated, because there was too much happening on the server, so there was no code problem. The line with leaving Guyana out was added before the second run.
+
+## Extraction
+
+WorldClim values were extracted with terra::extract() at each tower's longitude and latitude (EPSG:4326), which returns the value of the 5-arc-minute cell that contains the tower. For MODIS, the ORNL DAAC subset service (via the MODISTools package) was queried with the tower's latitude and longitude. It returned a window of 9 × 9 pixels of 250 m (about 2 × 2 km, km_lr = km_ab = 1) around the tower. 
+
+## Processing
+
+In FLUXNET, −9999 was read as NA when the files were read in 09_merge.R. MODIS fill values (−1000 and below) were set to NA and the reflectances scaled by 0.0001. No missing value was filled by hand or copied from another tower. Units: air temperature TA_F in °C, precipitation P_F in mm per day, and GPP (GPP_NT_VUT_REF) in g C m⁻² d⁻¹. For MODIS, I kept only pixels with reliability 0 or 1, calculated EVI per pixel as 2.5 · (NIR − Red) / (NIR + 6 · Red − 7.5 · Blue + 1), and averaged it over the good pixels of each date.
+
+The coarsest common time step for my question is one year. In 10_annual_table.R, I aggregated the daily data to annual mean temperature, annual precipitation and annual GPP (sum of the daily values), and dropped every tower-year with fewer than 350 days of data. Annual EVI values (peak EVI, and a summer mean that needs at least 3 composites) come from the original 16-day values, not from the daily interpolation created in 09_merge.R. Tables were joined by site_id (static table) and by site_id and date or year (time series). The WorldClim normals (BIO1, BIO12) were attached to each tower-year by site_id.
+
+GF-Guy was excluded from the analysis, because its night-time-partitioned GPP (GPP_NT_VUT_REF) is empty. A daytime-partitioned column (GPP_DT_VUT_REF) exists, but I did not use it, so that all towers rest on the same partitioning method. This leaves four towers. Measured precipitation at JP-Mse is implausible (annual sums of 4583 to 6392 mm and up to 427 mm in one day, compared with a WorldClim normal of 1320 mm), so I did not interpret it. I did not do a deep search into why because this was not the main focus here. Missing days were not filled. Annual GPP is the sum over the days with data, so years with gaps (at most 15 days, since years with fewer than 350 days were dropped) may be up to about 4% too low.
+
+
+
+## Analysis
+
+I calculated the temperature anomaly dT for each tower-year as annual mean TA_F minus BIO1, and the GPP anomaly dGPP as annual GPP minus the tower's own mean over the years used. For each tower, I fitted a linear regression of annual GPP on dT and report the slope (g C m⁻² yr⁻¹ per °C) and the Pearson correlation r. The numbers of years are 10 (AU-Ync), 27 (BE-Vie), 8 (JP-Mse) and 14 (US-GLE), which makes 59 tower-years from four towers. MODIS EVI is available for 6, 6, 8 and 7 of these years (27 in total). For MODIS, I used the annual peak EVI (the highest 16-day composite of the year) as a measure of maximum canopy greenness, and compared it with the temperature anomaly dT within each tower. This rests on 6, 6, 8 and 7 years (AU-Ync, BE-Vie, JP-Mse, US-GLE; 27 in total) and is used descriptively, not as a second test.
+
+# E4. Results
+Your figure(s) and the summary number from Part D, each with a caption that a reader understands without the text.
+
+## Question analysis
+
+```{r}
+annual <- read.csv("data/processed/site_annual.csv")
+static <- read.csv("data/processed/site_static.csv")
+
+# ---- Numbers per tower (for D2 and D3) ----------------------------------------
+stats <- annual |>
+  left_join(select(static, site_id, igbp), by = "site_id") |>
+  group_by(site_id, igbp) |>
+  summarise(n        = n(),
+            mean_dT  = mean(dT),                                    # °C vs 1970-2000 normal
+            r        = cor(dT, dGPP),                               # Pearson correlation
+            slope    = unname(coef(lm(GPP_year ~ dT))[2]),          # g C m-2 yr-1 per °C
+            p        = summary(lm(GPP_year ~ dT))$coefficients[2, 4],
+            .groups = "drop") |>
+  mutate(label = sprintf("%s (%s)\nn = %d years | slope = %.0f g C m-2 yr-1 per °C (r = %.2f)",
+                       site_id, igbp, n, slope, r))
+print(as.data.frame(stats), digits = 3)
+
+plot_df <- left_join(annual, select(stats, site_id, label), by = "site_id")
+
+# ---- Figure -------------------------------------------------------------------
+cap <- paste(strwrap(paste(
+  "Figure 1. The relation of yearly temperature and carbon uptake. Each point is one tower-year.",
+  "x-axis: annual mean air temperature of the tower (FLUXNET TA_F) minus the WorldClim 1970-2000",
+  "normal (BIO1) at the tower; the dashed vertical line marks the normal. Points to its right are",
+  "warmer than the normal.",
+  "y-axis: annual GPP minus the tower's own mean over the years shown (dashed horizontal line);",
+  "points above it are more productive than the tower's average year.",
+  "Solid line: linear regression with 95% confidence band; r = Pearson correlation.",
+  "Only years with at least 350 days of data are shown. GPP from night-time partitioning",
+  "(GPP_NT_VUT_REF). Axes differ between panels."), width = 120), collapse = "\n")
+
+p <- ggplot(plot_df, aes(dT, dGPP, colour = site_id, fill = site_id)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_smooth(method = "lm", se = TRUE, alpha = 0.15, linewidth = 0.8) +
+  geom_point(size = 2.2) +
+  facet_wrap(~ label, scales = "free", ncol = 2) +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  labs(x = "Temperature anomaly: tower-year mean minus WorldClim normal (°C)",
+       y = expression("GPP anomaly: year minus tower mean (g C"~m^-2~yr^-1*")"),
+       caption = cap) +
+  theme_bw(base_size = 11) +
+  theme(legend.position = "none",
+        strip.text = element_text(face = "bold"),
+        plot.caption = element_text(hjust = 0, size = 8.5))
+
+#dir.create("figures", showWarnings = FALSE)
+#ggsave("figures/fig1_dT_vs_dGPP.png", p, width = 9, height = 8, dpi = 300)
+p
+```
+
+Add the slope as your one number. It answers "how much does GPP change per °C warmer than normal?" and its unit is g C m⁻² yr⁻¹ per °C. Keep r next to it. In your code, replace the mutate(label = ...) line in the stats block with this
+
+```{r}
+annual <- read.csv("data/processed/site_annual.csv")
+table(annual$site_id)                       # years per tower
+nrow(annual)                                # total tower-years
+length(unique(annual$site_id))              # number of towers
+table(annual$site_id[!is.na(annual$EVI_max)])   # years with EVI
+```
+
+## MODIS
+```{r}
+daily  <- read_csv("data/processed/site_daily.csv",  show_col_types = FALSE)
+static <- read_csv("data/processed/site_static.csv", show_col_types = FALSE)
+annual <- read_csv("data/processed/site_annual.csv", show_col_types = FALSE)
+vi     <- read_csv("data/external/modis/modis_vi_my_sites.csv", show_col_types = FALSE)
+
+# ---- Table: WorldClim vs. measured climate, and MODIS EVI, per tower --------------
+# Measured climate from all complete years (>= 350 days), all five towers
+clim <- daily |>
+  mutate(year = year(date)) |>
+  group_by(site_id, year) |>
+  summarise(n_TA = sum(!is.na(TA_F)), n_P = sum(!is.na(P_F)),
+            TA = mean(TA_F, na.rm = TRUE), P = sum(P_F, na.rm = TRUE), .groups = "drop") |>
+  filter(n_TA >= 350, n_P >= 350) |>
+  group_by(site_id) |>
+  summarise(years_clim = n(), TA_measured = mean(TA), P_measured = mean(P))
+
+# MODIS description from the original 16-day values (towers that were downloaded)
+modis <- vi |>
+  filter(!is.na(evi)) |>
+  group_by(site_id) |>
+  summarise(MODIS_from = format(min(date)), MODIS_to = format(max(date)),
+            n_composites = n(), EVI_mean = mean(evi), EVI_max = max(evi))
+
+# Years that went into the analysis with EVI (from the annual table)
+evi_years <- annual |> filter(!is.na(EVI_max)) |> count(site_id, name = "years_EVI_analysis")
+
+table_d4 <- static |>
+  select(site_id, igbp, BIO1, BIO12) |>
+  left_join(clim,      by = "site_id") |>
+  left_join(modis,     by = "site_id") |>
+  left_join(evi_years, by = "site_id") |>
+  mutate(across(where(is.numeric), ~ round(.x, 2)))
+
+print(as.data.frame(table_d4))
+#write_csv(table_d4, "data/processed/table_d4_datasets.csv")
+
+# ---- Figure: EVI time series per tower (16-day values) ---------------------------
+cap <- paste(strwrap(paste(
+  "Figure 2. MODIS vegetation greenness at the towers.",
+  "Each point is one 16-day MODIS composite (MOD13Q1, 250 m): the mean EVI of the good-quality",
+  "pixels (reliability 0 or 1) in a 9 x 9 pixel window (about 2 x 2 km) around the tower.",
+  "EVI is unitless; higher values mean a denser, greener canopy.",
+  "Only the last 8 years of each tower record were downloaded. GF-Guy was not downloaded",
+  "(no GPP available)."), width = 120), collapse = "\n")
+
+vi_plot <- vi |>
+  filter(!is.na(evi)) |>
+  left_join(select(static, site_id, igbp), by = "site_id") |>
+  mutate(panel = paste0(site_id, " (", igbp, ")"))
+
+p2 <- ggplot(vi_plot, aes(date, evi, colour = site_id)) +
+  geom_line(linewidth = 0.4, alpha = 0.6) +
+  geom_point(size = 1) +
+  facet_wrap(~ panel, scales = "free_x", ncol = 2) +
+  scale_colour_brewer(palette = "Dark2") +
+  labs(x = "Date", y = "EVI (unitless)", caption = cap) +
+  theme_bw(base_size = 11) +
+  theme(legend.position = "none",
+        strip.text = element_text(face = "bold"),
+        plot.caption = element_text(hjust = 0, size = 8.5))
+
+#dir.create("figures", showWarnings = FALSE)
+#ggsave("figures/fig2_modis_evi.png", p2, width = 9, height = 6, dpi = 300)
+p2
+```
+
+## Checking precipitation:
+
+```{r}
+daily <- read.csv("data/processed/site_daily.csv")
+jp <- daily |> filter(site_id == "JP-Mse")
+
+# a) Daily values: what does a typical day look like?
+summary(jp$P_F)                      # units should be mm per day
+mean(jp$P_F, na.rm = TRUE)           # 1320 mm/yr would be about 3.6 mm/day
+sum(jp$P_F > 100, na.rm = TRUE)      # days with more than 100 mm (should be very few)
+sum(jp$P_F > 0,   na.rm = TRUE) / sum(!is.na(jp$P_F))   # share of rainy days
+
+# b) Annual totals per year: stable or jumping around?
+jp |>
+  mutate(year = as.integer(substr(date, 1, 4))) |>
+  group_by(year) |>
+  summarise(P_year = sum(P_F, na.rm = TRUE), max_day = max(P_F, na.rm = TRUE))
+
+# c) Compare with the raw FLUXNET file: is the unit or gap-filling flag odd?
+
+zip_file <- list.files("data/raw", pattern = "JP-Mse.*FLUXNET.*\\.zip$", full.names = TRUE)
+dd <- grep("FLUXMET_DD", unzip(zip_file, list = TRUE)$Name, value = TRUE)[1]
+x  <- read_csv(unz(zip_file, dd), na = c("-9999", "-9999.0"), show_col_types = FALSE)
+summary(x[, intersect(c("P", "P_F", "P_F_QC"), names(x))])
+```
+
+Why the JP-Mse precipitation is not credible
+
+Daily values: the mean is 14.6 mm/day, and the median is 1.3 mm/day. Real rainfall at a site with a 1320 mm normal averages about 3.6 mm/day.
+Extremes: 84 days exceed 100 mm, and the maximum is 427 mm in a single day. That is far beyond what is plausible for one day.
+Annual totals: 4583 to 6392 mm in every one of the 8 years. A consistent offset of about 4 times the normal points to a measurement or unit problem in the source file, not to wet years.
+P_F_QC is 0 everywhere: this flag means the values were not gap-filled. So the numbers are what the file itself contains, and the problem is not something the merge or annual code introduced.
+Therefore, the precipitation from Japan will be excluded from interpretation.
+
+## Supporting numbers
+
+```{r}
+#| label: supporting-numbers
+#| echo: true
+library(dplyr)
+annual <- read.csv("data/processed/site_annual.csv")
+daily  <- read.csv("data/processed/site_daily.csv")
+vi     <- read.csv("data/external/modis/modis_vi_my_sites.csv")
+vi$date <- as.Date(vi$date)
+
+# Anomalies, warmest/coolest year, temperature vs. precipitation, GPP trend
+annual |>
+  group_by(site_id) |>
+  summarise(min_dT = min(dT), max_dT = max(dT),
+            year_warmest = year[which.max(dT)], dGPP_warmest = dGPP[which.max(dT)],
+            year_coolest = year[which.min(dT)], dGPP_coolest = dGPP[which.min(dT)],
+            r_dT_P = cor(dT, P_year),        # JP-Mse: P_F implausible, ignore
+            r_year_GPP = cor(year, GPP_year))
+
+# Sensitivity check: does a shared time trend change the dT slope?
+annual |>
+  group_by(site_id) |>
+  summarise(r_year_dT = cor(year, dT),
+            slope_dT_adj = coef(lm(GPP_year ~ dT + year))["dT"])
+
+# EVI vs. temperature and GPP (6-8 years per tower)
+annual |>
+  filter(!is.na(EVI_max)) |>
+  group_by(site_id) |>
+  summarise(n = n(), r_dT_EVImax = cor(dT, EVI_max), r_GPP_EVImax = cor(GPP_year, EVI_max))
+
+# MODIS composites kept after the reliability filter
+vi |>
+  group_by(site_id) |>
+  summarise(kept = n(),
+            expected = round(as.numeric(max(date) - min(date)) / 16) + 1,
+            pct_kept = round(100 * kept / expected),
+            median_good_pixels = median(n_good_pixels))
+table(vi$site_id, format(vi$date, "%m"))
+
+# JP-Mse precipitation check
+jp <- daily |> filter(site_id == "JP-Mse")
+summary(jp$P_F)
+sum(jp$P_F > 100, na.rm = TRUE)
+jp |> mutate(year = as.integer(substr(date, 1, 4))) |>
+  group_by(year) |> summarise(P_year = sum(P_F, na.rm = TRUE), max_day = max(P_F, na.rm = TRUE))
+```
+
+# E5. Discussion
+
+5–10 sentences:
+
+State that you left out precipitation because the measured precipitation and the WorldClim BIO12 differ too strongly at some towers, and give the two numbers above as the reason.
+The first part ("all years warmer") will not hold everywhere, since the mean anomaly was negative at JP-Mse and US-GLE. Report that as it is.
+State that the analysis has 4 towers, not 5, because GF-Guy has no night-time GPP.
+
+Does the result support your hypothesis? For which towers, and for which not?
+Scale: for each of your two datasets, compare the pixel size with the flux footprint (about 100 m – 1 km). What does the mismatch mean for your answer?
+The two most important limitations (data, n, method), and what you would do with more time or more data.
+
+
+The hypothesis was only partly supported. The first part, that all tower years are warmer than the 1970-2000 normal, did not hold: the mean anomaly was positive at AU-Ync (+0.60 °C) and BE-Vie (+0.65 °C) but negative at JP-Mse (−0.41 °C) and US-GLE (−0.43 °C), and every tower had at least one year below the normal (minimum −0.50 to −1.62 °C). The second part, lower GPP in warmer years within a tower, was clearly supported only at AU-Ync (slope −429 g C m⁻² yr⁻¹ per °C, r = −0.95, n = 10), where the warmest year (2019) was 326 g C m⁻² yr⁻¹ below the tower mean and the coolest (2022) 401 above it. At BE-Vie there was no clear relationship (r = 0.16, n = 27), but because both temperature (r = 0.66) and GPP (r = 0.62) increase with year there, the slope became negative (−97 g C m⁻² yr⁻¹ per °C) when year was added as a second predictor; at JP-Mse (r = 0.78, n = 8) and US-GLE (r = 0.59, n = 14), GPP was higher in warmer years, the opposite of the hypothesis, and these slopes hardly changed with year (95 and 101). I left out precipitation from the analysis, because measured precipitation and the WorldClim normal differ too strongly at some towers (JP-Mse 5331 vs 1320 mm yr⁻¹, with up to 427 mm in a single day, and US-GLE 1351 vs 496 mm yr⁻¹), so the water-loss mechanism could not be tested; at AU-Ync, annual precipitation was unrelated to temperature (r = −0.03), so I cannot say whether the strong negative slope reflects water stress, and I did not test explanations for the positive slopes (for example less cold limitation at US-GLE or crop management at JP-Mse). For scale, the WorldClim cell (5′, about 9 km) is much larger than the flux footprint (about 100 m to 1 km), so BIO1 describes the surroundings, and the tower's measured mean temperature differed from it by −0.4 to +0.6 °C; this shifts the anomalies, which also contain any warming since 1970-2000, but not the slope or r, since BIO1 is one constant per tower. The MODIS pixel (250 m) is similar to the footprint, but my 9 × 9 window (about 2 × 2 km) is larger and may include other land cover, which I did not check, and the reliability filter removed 37% of the US-GLE composites, mostly from October to May (probably snow, not verified), so only its summer EVI is well covered. Peak EVI showed no consistent relationship with temperature (r = −0.26 to 0.25) or GPP (r = −0.17 to 0.41, 6 to 8 years per tower), and at AU-Ync, the calendar-year peak may split a growing season that spans the turn of the year (not checked). The first main limitation is the sample: four towers with 8 to 27 years and differing directions cannot be generalised, the p-values at JP-Mse and US-GLE (0.02 to 0.03) are not adjusted for four tests, temperature varies together with other drivers, and GPP rises with year at all towers (r = 0.27 to 0.62), so the slopes show associations that a shared trend can change, as the sign change at BE-Vie shows. The second is the lack of usable water data (and GF-Guy excluded for lack of night-time GPP), so with more time I would test the mechanism with the towers' own VPD_F, detrend GPP properly and report significance for it, repeat the analysis with GPP_DT_VUT_REF including GF-Guy, and download the full MODIS record. All composites had 81 of 81 good pixels, so the loss at US-GLE is whole dates and not thin pixel coverage.
+
+# E6. Data and citation
+
+Each FLUXNET site citation (from your snapshot), Pastorello et al. (2020), Scientific Data 7, 225, the citations of your two datasets (in the header of each script and on the Block 5 slide "How to cite what you used"), and the FLUXNET acknowledgement from flux4student/README.md.
+
+## Site data
+
+The data come from the FLUXNET data hub (snapshot `fluxnet_shuttle_snapshot_20261113T105747.csv`). The data citations for the five sites are:
+
+```{r}
+snapshot <- read.csv("data/snapshots/fluxnet_shuttle_snapshot_20261113T105747.csv")
+
+my_sites <- c("US-GLE", "BE-Vie", "GF-Guy", "JP-Mse", "AU-Ync") 
+
+# Check that all sites exist in the snapshot
+setdiff(my_sites, snapshot$site_id)
+
+citations <- snapshot |>
+  filter(site_id %in% my_sites) |>
+  # team_member_* columns repeat rows per person, so drop them before de-duplicating
+  select(site_id, product_citation) |>
+  distinct() |>
+  arrange(site_id)
+
+citations
+```
+
+## FLUXNET data product
+ Pastorello et al. (2020), Scientific Data 7, 225, https://doi.org/10.1038/s41597-020-0534-3
+
+## External datasets
+
+Didan, K. (2021) MOD13Q1 MODIS/Terra Vegetation Indices 16-Day L3 Global 250m SIN Grid V061. NASA LP DAAC. https://doi.org/10.5067/MODIS/MOD13Q1.061
+Fick, S.E. & Hijmans, R.J. (2017) WorldClim 2. Int. J. Climatol. 37, 4302–4315. https://doi.org/10.1002/joc.5086
+
+## Acknowledgement
+
+FLUXNET data products were produced and harmonized by eddy covariance regional networks and data processing centers, including AmeriFlux, ChinaFlux, European Fluxes Database, ICOS, JapanFlux, KoFlux, OzFlux, SAEON, and TERN. These products also include a modified version of ERA5 hourly data provided by the Copernicus Climate Change Service.
